@@ -24,9 +24,11 @@ pub mod ospatch;
 pub mod packages;
 pub mod perms;
 pub mod ports;
+pub mod procmaps;
 pub mod services;
 pub mod ssh;
 pub mod testing;
+pub mod watch;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -130,6 +132,14 @@ pub trait Collector: Send + Sync {
     fn domain(&self) -> pk_proto::Domain;
     /// Collect the current state, reading only through `sys`.
     fn collect(&self, sys: &SysRoot) -> Result<DomainState>;
+
+    /// Root-relative paths whose change should trigger an immediate re-collect
+    /// (the file-watch half of "interval + jitter + file-watch triggers", see
+    /// [`watch`]). Default: none (timer-only). Provided (not required) so
+    /// existing collectors need not implement it.
+    fn watched_paths(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// Filesystem root that all collector reads are relative to.
