@@ -19,6 +19,7 @@ pub mod bruteforce;
 pub mod certs;
 pub mod container_packages;
 pub mod containers;
+pub mod endpoints;
 pub mod firewall;
 pub mod ospatch;
 pub mod packages;
