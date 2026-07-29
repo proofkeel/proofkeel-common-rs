@@ -105,7 +105,7 @@ pub enum Cadence {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DomainState {
     /// Which domain this state belongs to.
-    pub domain: pk_proto::Domain,
+    pub domain: pk_agent_proto::Domain,
     /// Canonical serialized payload (JSON).
     pub payload: Vec<u8>,
     /// BLAKE3 content hash of `payload`.
@@ -115,7 +115,7 @@ pub struct DomainState {
 impl DomainState {
     /// Build a `DomainState`, hashing the payload.
     #[must_use]
-    pub fn new(domain: pk_proto::Domain, payload: Vec<u8>) -> Self {
+    pub fn new(domain: pk_agent_proto::Domain, payload: Vec<u8>) -> Self {
         let hash = *blake3::hash(&payload).as_bytes();
         Self {
             domain,
@@ -132,7 +132,7 @@ pub trait Collector: Send + Sync {
     /// Suggested run cadence.
     fn cadence(&self) -> Cadence;
     /// The domain this collector populates.
-    fn domain(&self) -> pk_proto::Domain;
+    fn domain(&self) -> pk_agent_proto::Domain;
     /// Collect the current state, reading only through `sys`.
     fn collect(&self, sys: &SysRoot) -> Result<DomainState>;
 
@@ -315,9 +315,9 @@ mod tests {
 
     #[test]
     fn domain_state_hashes_payload() {
-        let a = DomainState::new(pk_proto::Domain::Packages, b"hello".to_vec());
-        let b = DomainState::new(pk_proto::Domain::Packages, b"hello".to_vec());
-        let c = DomainState::new(pk_proto::Domain::Packages, b"world".to_vec());
+        let a = DomainState::new(pk_agent_proto::Domain::Packages, b"hello".to_vec());
+        let b = DomainState::new(pk_agent_proto::Domain::Packages, b"hello".to_vec());
+        let c = DomainState::new(pk_agent_proto::Domain::Packages, b"world".to_vec());
         assert_eq!(a.hash, b.hash);
         assert_ne!(a.hash, c.hash);
     }
