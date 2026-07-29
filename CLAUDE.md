@@ -16,7 +16,7 @@ first.
 Shared chassis crates consumed by both ProofKeel agent binaries:
 `proofkeel-agent` (acts: remediation/patching, root) and `proofkeel-sensor`
 (observes: telemetry, read-only). Extraction set: `pk-transport`, `pk-update`,
-`pk-osinfo`; candidates `pk-store`, `pk-sched`. `pk-proto` stays in
+`pk-osinfo`; candidates `pk-store`, `pk-sched`. `pk-agent-proto` stays in
 `proofkeel-agent` — each client repo owns its own protocol contract.
 
 ## Constraints

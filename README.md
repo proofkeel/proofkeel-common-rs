@@ -17,7 +17,7 @@ preserved for auditors.
 | `pk-osinfo` | OS/distro detection |
 | (`pk-store`, `pk-sched`) | candidates, extracted only if the sensor needs them |
 
-`pk-proto` never moves here — protocol contracts are owned by the client repo
+`pk-agent-proto` never moves here — protocol contracts are owned by the client repo
 that speaks them (`proofkeel-agent`, `proofkeel-sensor` each own theirs).
 
 This repository becomes public at the first `cargo publish` (a crates.io
