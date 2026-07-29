@@ -1,6 +1,6 @@
 [package]
-name = "pk-osinfo"
-description = "Distro / init-system / virtualization / container detection for the ProofKeel agents."
+name = "pk-sysroot"
+description = "Root-confined filesystem reads for ProofKeel host collectors."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,8 +12,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-pk-sysroot = { workspace = true }
-serde = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

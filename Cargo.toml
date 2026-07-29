@@ -1,5 +1,62 @@
-# Virtual workspace. Members arrive via history-preserving extraction from
-# proofkeel-agent (see README); do not add hand-copied crates.
+# Shared chassis crates for the ProofKeel agents. Members arrive via
+# history-preserving extraction from proofkeel-agent (see README); do not add
+# hand-copied crates.
 [workspace]
 resolver = "2"
-members = []
+members = [
+    "crates/pk-sysroot",
+    "crates/pk-osinfo",
+    "crates/pk-backoff",
+]
+
+[workspace.package]
+version = "0.1.0"
+# Edition 2021, not 2024: proofkeel-agent's workspace is still 2021 and editions
+# are per-crate, so a 2021 chassis is consumable from both agents without
+# forcing an edition bump on either. proofkeel-sensor's own 2024 crates depend
+# on these with no friction.
+edition = "2021"
+# Kept at proofkeel-agent's declared floor so its MSRV claim stays honest, even
+# though all three repos pin 1.94.1 in rust-toolchain.toml.
+rust-version = "1.85"
+license = "Apache-2.0"
+repository = "https://github.com/proofkeel/proofkeel-common-rs"
+homepage = "https://proofkeel.com"
+# Consumers wire these in as pinned git dependencies. Flip to publishable only
+# when the crates.io release is actually intended: the source tarball is public
+# regardless of repo visibility (see README).
+publish = false
+
+# Workspace-wide lint baseline, identical to proofkeel-agent's and
+# proofkeel-sensor's so a crate cannot pass here and fail there. Unlike those
+# repos there is no `unsafe` exception: every crate in this workspace carries
+# `#![forbid(unsafe_code)]` at its root, and nothing here needs FFI.
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+# `pedantic` is deliberately NOT enabled workspace-wide, matching both agent
+# repos: it is dominated by stylistic noise that would make `clippy -D warnings`
+# brittle. High-value lints are opted into individually.
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+
+[workspace.dependencies]
+# Internal crates -----------------------------------------------------------
+pk-sysroot = { path = "crates/pk-sysroot", version = "0.1.0" }
+
+# Errors -------------------------------------------------------------------
+thiserror = "2"
+
+# Serialization ------------------------------------------------------------
+serde = { version = "1", features = ["derive"] }
+
+# Randomness (backoff jitter) ----------------------------------------------
+rand = "0.8"
+
+# Test-only ----------------------------------------------------------------
+tempfile = "3"

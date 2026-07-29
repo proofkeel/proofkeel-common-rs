@@ -1,168 +1,76 @@
-//! Host posture collection for the ProofKeel agent.
+//! Root-confined filesystem access for ProofKeel host collectors.
 //!
-//! A [`Collector`] reads one security domain (packages, ssh, services, ...)
-//! through the [`SysRoot`] abstraction and produces a canonical, content-hashed
-//! [`DomainState`]. Two seams make collectors testable and safe:
+//! Every read a collector performs goes through [`SysRoot`], which roots it at
+//! a configurable path. Two things follow, and both matter:
 //!
-//! - [`SysRoot`] roots **every** filesystem read at a configurable path, so the
-//!   same collector runs against the live `/` and against a golden fixture dir.
-//! - [`CommandRunner`] abstracts external command execution (`sshd -T`, ...),
-//!   so tests inject canned output instead of shelling out (and the privileged
-//!   process is the only place a real runner is wired in).
+//! - **Tests run against fixture directories.** A collector that opens `/proc`
+//!   directly can only be tested on a host that happens to look right; one that
+//!   reads through a root can be tested against a checked-in `/proc` snapshot on
+//!   any machine, including CI and a developer's macOS laptop.
+//! - **Path traversal is structurally impossible.** A relative path containing
+//!   `..` is rejected rather than normalized, so no filename encountered while
+//!   walking `/proc` or `/etc/cron.d` can escape the root.
 //!
-//! Concrete collectors: [`packages::PackagesCollector`] and [`ssh::SshCollector`].
+//! # Why some operations have two spellings
+//!
+//! This crate is the merge of `proofkeel-agent`'s `pk_collect::SysRoot` and
+//! `proofkeel-sensor`'s `pk_snapshot::SysRoot`. They disagreed in exactly two
+//! places, and in both the disagreement is a real decision rather than an
+//! accident, so both behaviours are kept under distinct names:
+//!
+//! - [`SysRoot::path`] returns a [`Result`] naming the offending path;
+//!   [`SysRoot::path_opt`] returns an [`Option`] for call sites that only
+//!   branch on presence.
+//! - [`SysRoot::read_to_string`] is strict UTF-8; [`SysRoot::read_to_string_lossy`]
+//!   substitutes replacement characters. The choice is security-relevant, not
+//!   stylistic. A posture collector that silently reports `U+FFFD` in place of
+//!   a byte it could not decode turns corrupt input into a *finding*; a
+//!   telemetry collector reading `/proc/<pid>/cmdline`, whose bytes are chosen
+//!   by the observed process, must not let one hostile process blank the
+//!   reading for the other four hundred. Neither caller is wrong, so neither
+//!   name is the "default".
 
 #![forbid(unsafe_code)]
 
-pub mod backupstate;
-pub mod bruteforce;
-pub mod certs;
-pub mod container_packages;
-pub mod containers;
-pub mod endpoints;
-pub mod firewall;
-pub mod go_buildinfo;
-pub mod lang_packages;
-pub mod ospatch;
-pub mod packages;
-pub mod perms;
-pub mod ports;
-pub mod procmaps;
-pub mod services;
-pub mod ssh;
-pub mod testing;
-pub mod watch;
-
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
-/// Errors produced by collectors.
+/// Errors from confined reads.
 #[derive(Debug, thiserror::Error)]
-pub enum CollectError {
-    /// A filesystem read under the SysRoot failed.
-    #[error("io ({path}): {source}")]
-    Io {
-        /// The root-relative path that failed.
+pub enum SysError {
+    /// The path escaped the root.
+    #[error("path {path:?} escapes the collection root")]
+    Escapes {
+        /// The offending relative path.
         path: String,
-        /// Underlying I/O error.
+    },
+    /// A filesystem read failed.
+    #[error("read {path}: {source}")]
+    Io {
+        /// Root-relative path.
+        path: String,
+        /// Underlying error.
         #[source]
         source: std::io::Error,
     },
-    /// An external command failed or returned a non-zero status.
-    #[error("command `{program}` failed: {message}")]
-    Command {
-        /// Program that was invoked.
-        program: String,
-        /// Human-readable failure detail.
-        message: String,
-    },
-    /// The collected input could not be parsed.
-    #[error("parse error in {source_name}: {message}")]
-    Parse {
-        /// Logical source (e.g. `"dpkg/status"`, `"sshd -T"`).
-        source_name: String,
-        /// Detail.
-        message: String,
-    },
-    /// Serialization of the typed state failed.
-    #[error("serialize: {0}")]
-    Serialize(#[from] serde_json::Error),
 }
 
-/// Convenience result alias for collectors.
-pub type Result<T> = std::result::Result<T, CollectError>;
+/// Convenience result alias for confined reads.
+pub type Result<T> = std::result::Result<T, SysError>;
 
-/// Stable identifier for a collector (matches the control plane's collector
-/// registry; used by `PrivOp::RunCollector`).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct CollectorId(pub String);
-
-impl CollectorId {
-    /// Borrow the id as a string slice.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-/// How often a collector should run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Cadence {
-    /// Run on a fixed period.
-    Periodic(Duration),
-    /// Run when an inotify-style change is observed (Phase 2; treated as
-    /// periodic by the current scheduler).
-    OnChange,
-    /// Only run on explicit request.
-    Manual,
-}
-
-/// A collected, canonicalized domain state with its content hash.
-///
-/// `payload` is the deterministic serialization of the typed domain state;
-/// `hash` is its BLAKE3 digest, used for drift detection and the
-/// `DomainStateHash` reported in heartbeats.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DomainState {
-    /// Which domain this state belongs to.
-    pub domain: pk_agent_proto::Domain,
-    /// Canonical serialized payload (JSON).
-    pub payload: Vec<u8>,
-    /// BLAKE3 content hash of `payload`.
-    pub hash: [u8; 32],
-}
-
-impl DomainState {
-    /// Build a `DomainState`, hashing the payload.
-    #[must_use]
-    pub fn new(domain: pk_agent_proto::Domain, payload: Vec<u8>) -> Self {
-        let hash = *blake3::hash(&payload).as_bytes();
-        Self {
-            domain,
-            payload,
-            hash,
-        }
-    }
-}
-
-/// A collector for one security domain.
-pub trait Collector: Send + Sync {
-    /// Stable collector id.
-    fn id(&self) -> CollectorId;
-    /// Suggested run cadence.
-    fn cadence(&self) -> Cadence;
-    /// The domain this collector populates.
-    fn domain(&self) -> pk_agent_proto::Domain;
-    /// Collect the current state, reading only through `sys`.
-    fn collect(&self, sys: &SysRoot) -> Result<DomainState>;
-
-    /// Root-relative paths whose change should trigger an immediate re-collect
-    /// (the file-watch half of "interval + jitter + file-watch triggers", see
-    /// [`watch`]). Default: none (timer-only). Provided (not required) so
-    /// existing collectors need not implement it.
-    fn watched_paths(&self) -> Vec<String> {
-        Vec::new()
-    }
-}
-
-/// Filesystem root that all collector reads are relative to.
-///
-/// In production this is `/`; in tests it points at a fixture directory. Reads
-/// are confined to the root: a relative path is joined onto the root and any
-/// attempt to escape via a leading `/` or `..` component is rejected.
+/// A filesystem root that all collector reads are relative to.
 #[derive(Debug, Clone)]
 pub struct SysRoot {
     root: PathBuf,
 }
 
 impl SysRoot {
-    /// Create a root at `root`.
+    /// Root at `root`.
     #[must_use]
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into() }
     }
 
-    /// The live root (`/`).
+    /// The live host root (`/`).
     #[must_use]
     pub fn host() -> Self {
         Self::new("/")
@@ -174,121 +82,121 @@ impl SysRoot {
         &self.root
     }
 
-    /// Resolve a root-relative path, refusing to escape the root.
+    /// Resolve a root-relative path, refusing to escape.
+    ///
+    /// A leading `/` is tolerated and normalized rather than treated as an
+    /// absolute path that would escape the root.
     ///
     /// # Errors
-    /// Returns `None` if `rel` is absolute or contains a `..` component.
-    pub fn path(&self, rel: &str) -> Option<PathBuf> {
-        let rel = rel.trim_start_matches('/');
+    /// Returns [`SysError::Escapes`] for any `..` component.
+    pub fn path(&self, rel: &str) -> Result<PathBuf> {
         let mut out = self.root.clone();
-        for comp in rel.split('/') {
-            match comp {
-                "" | "." => continue,
-                ".." => return None,
+        for component in rel.trim_start_matches('/').split('/') {
+            match component {
+                "" | "." => {}
+                ".." => {
+                    return Err(SysError::Escapes {
+                        path: rel.to_string(),
+                    });
+                }
                 c => out.push(c),
             }
         }
-        Some(out)
+        Ok(out)
     }
 
-    /// Read a root-relative file to a string.
-    ///
-    /// # Errors
-    /// Fails if the path escapes the root or cannot be read.
-    pub fn read_to_string(&self, rel: &str) -> Result<String> {
-        let path = self.path(rel).ok_or_else(|| CollectError::Parse {
-            source_name: rel.to_string(),
-            message: "path escapes SysRoot".into(),
-        })?;
-        std::fs::read_to_string(&path).map_err(|e| CollectError::Io {
-            path: rel.to_string(),
-            source: e,
-        })
+    /// [`SysRoot::path`] for call sites that only branch on presence.
+    #[must_use]
+    pub fn path_opt(&self, rel: &str) -> Option<PathBuf> {
+        self.path(rel).ok()
     }
 
-    /// Read a root-relative file to bytes.
+    /// Read a file to bytes.
     ///
     /// # Errors
-    /// Fails if the path escapes the root or cannot be read.
+    /// Fails on escape or read error.
     pub fn read(&self, rel: &str) -> Result<Vec<u8>> {
-        let path = self.path(rel).ok_or_else(|| CollectError::Parse {
-            source_name: rel.to_string(),
-            message: "path escapes SysRoot".into(),
-        })?;
-        std::fs::read(&path).map_err(|e| CollectError::Io {
+        let path = self.path(rel)?;
+        std::fs::read(&path).map_err(|source| SysError::Io {
             path: rel.to_string(),
-            source: e,
+            source,
         })
+    }
+
+    /// Read a file to a string, requiring valid UTF-8.
+    ///
+    /// Invalid UTF-8 is an error, not a substitution: for a posture collector,
+    /// reporting `U+FFFD` where a byte could not be decoded would turn
+    /// undecodable input into an apparently well-formed finding. Use
+    /// [`SysRoot::read_to_string_lossy`] when the bytes are attacker- or
+    /// process-controlled and partial data beats no data.
+    ///
+    /// # Errors
+    /// Fails on escape, read error, or invalid UTF-8.
+    pub fn read_to_string(&self, rel: &str) -> Result<String> {
+        let path = self.path(rel)?;
+        std::fs::read_to_string(&path).map_err(|source| SysError::Io {
+            path: rel.to_string(),
+            source,
+        })
+    }
+
+    /// Read a file to a string, lossily decoding invalid UTF-8.
+    ///
+    /// Lossy rather than strict because several of these files carry
+    /// process-controlled bytes — `/proc/<pid>/cmdline` most obviously — and a
+    /// collector that errors on one weird process would report nothing about
+    /// the other four hundred.
+    ///
+    /// # Errors
+    /// Fails on escape or read error, never on encoding.
+    pub fn read_to_string_lossy(&self, rel: &str) -> Result<String> {
+        let bytes = self.read(rel)?;
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// List the entry names of a directory, sorted.
+    ///
+    /// Sorted because collector output feeds a content hash: unsorted directory
+    /// order would make an unchanged host look like it changed on every read.
+    ///
+    /// # Errors
+    /// Fails on escape or read error.
+    pub fn read_dir(&self, rel: &str) -> Result<Vec<String>> {
+        let path = self.path(rel)?;
+        let entries = std::fs::read_dir(&path).map_err(|source| SysError::Io {
+            path: rel.to_string(),
+            source,
+        })?;
+        let mut names: Vec<String> = entries
+            .filter_map(std::result::Result::ok)
+            .filter_map(|e| e.file_name().to_str().map(String::from))
+            .collect();
+        names.sort();
+        Ok(names)
     }
 
     /// Whether a root-relative path exists.
     #[must_use]
     pub fn exists(&self, rel: &str) -> bool {
-        self.path(rel).is_some_and(|p| p.exists())
+        self.path(rel).is_ok_and(|p| p.exists())
     }
-}
 
-/// Output of an external command.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CommandOutput {
-    /// Raw stdout bytes.
-    pub stdout: Vec<u8>,
-    /// Raw stderr bytes.
-    pub stderr: Vec<u8>,
-    /// Process exit code.
-    pub exit_code: i32,
-}
-
-impl CommandOutput {
-    /// Whether the command exited zero.
+    /// Whether a root-relative path is a directory.
     #[must_use]
-    pub fn success(&self) -> bool {
-        self.exit_code == 0
+    pub fn is_dir(&self, rel: &str) -> bool {
+        self.path(rel).is_ok_and(|p| p.is_dir())
     }
 
-    /// stdout as a lossy UTF-8 string.
-    #[must_use]
-    pub fn stdout_str(&self) -> String {
-        String::from_utf8_lossy(&self.stdout).into_owned()
-    }
-
-    /// stderr as a lossy UTF-8 string.
-    #[must_use]
-    pub fn stderr_str(&self) -> String {
-        String::from_utf8_lossy(&self.stderr).into_owned()
-    }
-}
-
-/// Abstraction over external command execution.
-///
-/// The production implementation ([`SystemCommandRunner`]) shells out via
-/// `std::process::Command`; tests inject [`testing::FixtureRunner`].
-pub trait CommandRunner: Send + Sync {
-    /// Run `program` with `args`, capturing output.
+    /// Read the target of a symlink, if it is one.
     ///
-    /// # Errors
-    /// Fails if the program cannot be spawned.
-    fn run(&self, program: &str, args: &[&str]) -> Result<CommandOutput>;
-}
-
-/// Real command runner backed by `std::process::Command`.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct SystemCommandRunner;
-
-impl CommandRunner for SystemCommandRunner {
-    fn run(&self, program: &str, args: &[&str]) -> Result<CommandOutput> {
-        let output = std::process::Command::new(program)
-            .args(args)
-            .output()
-            .map_err(|e| CollectError::Command {
-                program: program.to_string(),
-                message: e.to_string(),
-            })?;
-        Ok(CommandOutput {
-            stdout: output.stdout,
-            stderr: output.stderr,
-            exit_code: output.status.code().unwrap_or(-1),
-        })
+    /// Used for `/proc/<pid>/exe`, where the link target is the datum.
+    #[must_use]
+    pub fn read_link(&self, rel: &str) -> Option<String> {
+        let path = self.path(rel).ok()?;
+        std::fs::read_link(path)
+            .ok()
+            .map(|p| p.to_string_lossy().into_owned())
     }
 }
 
@@ -297,28 +205,123 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sysroot_confines_reads() {
-        let sys = SysRoot::new("/var/lib");
+    fn joins_relative_paths_under_the_root() {
+        let sys = SysRoot::new("/fixtures/host");
         assert_eq!(
-            sys.path("dpkg/status").unwrap(),
-            PathBuf::from("/var/lib/dpkg/status")
+            sys.path("proc/1/stat").unwrap(),
+            PathBuf::from("/fixtures/host/proc/1/stat")
         );
-        // Leading slash is tolerated and normalised.
+        // A leading slash is tolerated and normalized rather than treated as an
+        // absolute path that would escape the root.
         assert_eq!(
-            sys.path("/dpkg/status").unwrap(),
-            PathBuf::from("/var/lib/dpkg/status")
+            sys.path("/etc/passwd").unwrap(),
+            PathBuf::from("/fixtures/host/etc/passwd")
         );
-        // Escapes are rejected.
-        assert!(sys.path("../etc/passwd").is_none());
-        assert!(sys.path("a/../../b").is_none());
     }
 
     #[test]
-    fn domain_state_hashes_payload() {
-        let a = DomainState::new(pk_agent_proto::Domain::Packages, b"hello".to_vec());
-        let b = DomainState::new(pk_agent_proto::Domain::Packages, b"hello".to_vec());
-        let c = DomainState::new(pk_agent_proto::Domain::Packages, b"world".to_vec());
-        assert_eq!(a.hash, b.hash);
-        assert_ne!(a.hash, c.hash);
+    fn traversal_is_refused_not_normalized() {
+        // Filenames encountered while walking /proc are not trusted input.
+        let sys = SysRoot::new("/fixtures/host");
+        assert!(sys.path("../etc/shadow").is_err());
+        assert!(sys.path("proc/../../etc/shadow").is_err());
+        assert!(sys.path("a/b/../../../..").is_err());
+        // The Option spelling agrees with the Result spelling on every input.
+        assert!(sys.path_opt("../etc/shadow").is_none());
+        assert!(sys.path_opt("a/../../b").is_none());
+        assert!(sys.path_opt("dpkg/status").is_some());
+    }
+
+    #[test]
+    fn reads_and_lists_through_the_root() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("etc")).unwrap();
+        std::fs::write(dir.path().join("etc/passwd"), "root:x:0:0::/root:/bin/sh\n").unwrap();
+        std::fs::write(dir.path().join("etc/group"), "root:x:0:\n").unwrap();
+
+        let sys = SysRoot::new(dir.path());
+        assert!(sys
+            .read_to_string("etc/passwd")
+            .unwrap()
+            .starts_with("root:"));
+        assert_eq!(sys.read("etc/group").unwrap(), b"root:x:0:\n");
+        assert_eq!(sys.read_dir("etc").unwrap(), vec!["group", "passwd"]);
+        assert!(sys.exists("etc/passwd"));
+        assert!(!sys.exists("etc/nope"));
+        assert!(sys.is_dir("etc"));
+        assert!(!sys.is_dir("etc/passwd"));
+    }
+
+    #[test]
+    fn directory_listings_are_sorted_so_hashes_are_stable() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("proc")).unwrap();
+        for pid in ["10", "2", "1", "300"] {
+            std::fs::create_dir(dir.path().join("proc").join(pid)).unwrap();
+        }
+        let sys = SysRoot::new(dir.path());
+        assert_eq!(sys.read_dir("proc").unwrap(), vec!["1", "10", "2", "300"]);
+    }
+
+    #[test]
+    fn strict_and_lossy_reads_differ_only_on_undecodable_bytes() {
+        // /proc/<pid>/cmdline contains whatever bytes the process chose. The
+        // strict reader must refuse it; the lossy reader must not, and the two
+        // must agree on everything that does decode.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("cmdline"), [0xff, 0xfe, b'o', b'k']).unwrap();
+        std::fs::write(dir.path().join("clean"), "hello\n").unwrap();
+        let sys = SysRoot::new(dir.path());
+
+        assert!(sys.read_to_string("cmdline").is_err());
+        assert!(sys.read_to_string_lossy("cmdline").unwrap().ends_with("ok"));
+        assert_eq!(
+            sys.read_to_string("clean").unwrap(),
+            sys.read_to_string_lossy("clean").unwrap()
+        );
+    }
+
+    #[test]
+    fn missing_files_are_errors_not_panics() {
+        let sys = SysRoot::new("/definitely/not/here");
+        assert!(matches!(
+            sys.read_to_string("anything"),
+            Err(SysError::Io { .. })
+        ));
+        assert!(matches!(
+            sys.read_to_string_lossy("anything"),
+            Err(SysError::Io { .. })
+        ));
+        assert!(matches!(sys.read_dir("anything"), Err(SysError::Io { .. })));
+    }
+
+    #[test]
+    fn escaping_reads_report_escape_not_io() {
+        // The distinction matters: an escape is a bug or an attack, an I/O
+        // error is an ordinary absent file.
+        let sys = SysRoot::new("/fixtures/host");
+        assert!(matches!(
+            sys.read("../etc/shadow"),
+            Err(SysError::Escapes { .. })
+        ));
+        assert!(matches!(
+            sys.read_to_string("../etc/shadow"),
+            Err(SysError::Escapes { .. })
+        ));
+        assert!(!sys.exists("../etc/shadow"));
+        assert!(sys.read_link("../etc/shadow").is_none());
+    }
+
+    #[test]
+    fn symlink_targets_are_readable() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("target"), "x").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(dir.path().join("target"), dir.path().join("exe")).unwrap();
+        let sys = SysRoot::new(dir.path());
+        #[cfg(unix)]
+        assert!(sys.read_link("exe").unwrap().ends_with("target"));
+        // A regular file is not a symlink.
+        assert!(sys.read_link("target").is_none());
     }
 }

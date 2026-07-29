@@ -1,0 +1,15 @@
+[package]
+name = "pk-backoff"
+description = "Jittered exponential retry backoff shared by the ProofKeel agents."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+rand = { workspace = true }
