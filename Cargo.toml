@@ -1,0 +1,5 @@
+# Virtual workspace. Members arrive via history-preserving extraction from
+# proofkeel-agent (see README); do not add hand-copied crates.
+[workspace]
+resolver = "2"
+members = []

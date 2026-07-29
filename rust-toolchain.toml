@@ -1,0 +1,6 @@
+# Pinned to the same toolchain as proofkeel-agent and proofkeel-sensor; the
+# three repos bump together.
+[toolchain]
+channel = "1.94.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
