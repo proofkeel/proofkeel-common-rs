@@ -27,13 +27,15 @@ Extracted so far:
 Deliberately **not** shared, despite being in the original plan: `pk-transport`
 (agent's gRPC/tonic vs sensor's HTTPS/reqwest — different protocol, different
 trust model), `pk-store` outbox (SQLite/WAL vs segment files with CRC32
-framing), `pk-update` (sensor has no self-update path yet — nothing to
-converge), and signed-document verification (agent's zstd/protobuf bundle vs
-sensor's JSON envelope — only the key-id trust set is common, and it is
-small). See README.md's "Deliberately not shared" section for the full
-rationale before proposing to merge any of these. `pk-agent-proto` never moves
-here — protocol contracts are owned by the client repo that speaks them
-(`proofkeel-agent`, `proofkeel-sensor` each own theirs).
+framing), `pk-update` (sensor has no self-update path — the 2026-08-03
+decision made that permanent, not a "yet": there is no second implementation
+to converge, and none is planned), and signed-document verification (agent's
+zstd/protobuf bundle vs sensor's JSON envelope — only the key-id trust set is
+common, and it is small). See README.md's "Deliberately not shared" section
+for the full rationale before proposing to merge any of these.
+`pk-agent-proto` never moves here — protocol contracts are owned by the
+client repo that speaks them (`proofkeel-agent`, `proofkeel-sensor` each own
+theirs).
 
 ## Constraints
 

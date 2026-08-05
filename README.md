@@ -28,8 +28,9 @@ agents as built shows that would be a premature merge, not a deduplication:
 - **`pk-store` outbox vs `pk-spool`** — SQLite/WAL versus segment files with
   CRC32 framing. The sensor avoids `rusqlite` deliberately, for binary size and
   telemetry write volume.
-- **`pk-update`** — the sensor has no self-update path yet. Extract when there
-  is a second implementation to converge, not before.
+- **`pk-update`** — the sensor has no self-update path. The 2026-08-03
+  decision made that permanent, not a staging gap: there is no second
+  implementation to converge, and none is planned.
 - **Signed-document verification** — the agent verifies a zstd-compressed
   protobuf bundle with a domain-separated prefix and a durable downgrade gate;
   the sensor verifies a JSON envelope with a base64 payload and
