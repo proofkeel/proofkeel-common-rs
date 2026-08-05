@@ -37,10 +37,14 @@ here — protocol contracts are owned by the client repo that speaks them
 
 ## Constraints
 
-- Supply-chain critical: `pk-update` (signed self-update) ships in every agent
-  install. The signature-verification invariants in SECURITY.md are normative.
-  `proofkeel-agent`'s release auditor scope must follow `pk-update` into this
-  repo when it lands.
+- Supply-chain critical, but not for self-update: every crate here compiles
+  into *both* agent binaries, so a defect or a compromised dependency reaches
+  every ProofKeel install regardless of which agent is running. The
+  invariants in SECURITY.md (confined-read path safety, `#![forbid(unsafe_code)]`
+  across the workspace, dependency vetting) are normative. `pk-update` does
+  **not** follow into this repo — the agent-release-auditor scope stays with
+  `proofkeel-agent` (plan §4.2), and the 2026-08-03 decision that the sensor
+  gets no self-update path at all makes that permanent rather than "not yet".
 - Public at first `cargo publish` — full git history becomes public; every
   commit must be publishable. DCO sign-off (`git commit -s`) on all commits.
 - Semver discipline: `proofkeel-agent` and `proofkeel-sensor` pin exact
