@@ -39,7 +39,9 @@ check_history() {
     missing=0
     checked=0
 
-    for commit in $(git rev-list --reverse "$revision"); do
+    # GitHub creates merge commits without a contributor-authored message.
+    # Their introduced non-merge commits are still traversed and checked.
+    for commit in $(git rev-list --reverse --no-merges "$revision"); do
         checked=$((checked + 1))
         if git log -1 --format=%B "$commit" | has_valid_signoff; then
             continue
@@ -55,7 +57,7 @@ check_history() {
         exit 1
     fi
 
-    echo "DCO check: all $checked commits carry a valid Signed-off-by trailer"
+    echo "DCO check: all $checked non-merge commits carry a valid Signed-off-by trailer"
 }
 
 [ "$#" -eq 2 ] || usage

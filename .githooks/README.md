@@ -12,3 +12,5 @@ Create one with `git commit --signoff`, or amend the current commit with
 
 The GitHub DCO workflow is the authoritative shared gate; the local hook
 provides the same failure before a commit leaves the workstation.
+GitHub-generated merge commits are exempt in CI, while every non-merge commit
+introduced by the merge is still checked.
