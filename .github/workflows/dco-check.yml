@@ -1,48 +1,23 @@
-name: dco-check
-on: [push, pull_request]
+name: DCO
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
 permissions:
   contents: read
 
-# Enforces README.md / CLAUDE.md — "DCO sign-off (`git commit -s`) on all
-# commits". Unlike proofkeel-sensor's equivalent, which grandfathers the
-# history that predates it and only checks the push/PR range, this repo's
-# entire history carries a Signed-off-by trailer, so the check runs over
-# *every* commit reachable from HEAD. That keeps CLAUDE.md's claim CI-enforced
-# rather than aspirational, and catches a force-push that reintroduces an
-# unsigned commit anywhere in history — the exact failure this repo was
-# repaired for.
-#
-# Merges are excluded: GitHub's own "Merge pull request" commits never carry a
-# trailer, so enforcing on them would fail the first UI merge.
-#
-# Hand-rolled (no third-party action) to keep the supply chain minimal,
-# matching secret-scan.yml's approach.
 jobs:
-  dco:
+  signed-off-history:
+    name: Signed-off commit history
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out full history
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
+          persist-credentials: false
 
-      - name: Every commit in history must carry a Signed-off-by trailer (DCO)
-        run: |
-          set -euo pipefail
-
-          missing=0
-          for sha in $(git rev-list --no-merges HEAD); do
-            if ! git log -1 --pretty=%B "$sha" | grep -qiE '^Signed-off-by: .+ <.+>$'; then
-              echo "::error::commit $sha is missing a DCO Signed-off-by trailer"
-              git log -1 --pretty='  %h %s (%an)' "$sha"
-              missing=1
-            fi
-          done
-
-          if [ "$missing" -ne 0 ]; then
-            echo
-            echo "One or more commits above are missing a 'Signed-off-by' trailer."
-            echo "Sign off with: git commit -s   (see README.md)"
-            exit 1
-          fi
-
-          echo "All $(git rev-list --no-merges --count HEAD) non-merge commits carry a DCO trailer."
+      - name: Verify DCO trailers
+        run: ./scripts/check-dco.sh --history HEAD
