@@ -59,6 +59,20 @@ pk-sysroot = { path = "../proofkeel-common-rs/crates/pk-sysroot" }
 This repository becomes public at the first `cargo publish` (a crates.io
 source tarball is public regardless of repo visibility).
 
+## Verification
+
+Run the same supply-chain gates used in CI before changing dependencies:
+
+```sh
+./scripts/check-supply-chain-policy.sh
+cargo deny check
+cargo audit
+```
+
+`deny.toml` allows only Apache-2.0-compatible permissive licenses and crates.io
+sources. Any license, advisory, or source exception is a security-policy change
+and must carry a narrow rationale.
+
 ## License
 
 Apache-2.0. Contributions require DCO sign-off (`git commit -s`).

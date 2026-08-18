@@ -1,0 +1,48 @@
+# cargo-deny policy for the shared chassis crates. Run `cargo deny check`.
+#
+# These crates compile into every ProofKeel agent binary, so CI rejects known
+# advisories, incompatible licenses, uncontrolled dependency sources, and
+# wildcard registry requirements. Exceptions must be narrow, documented, and
+# reviewed as security changes.
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = []
+
+[licenses]
+version = 2
+confidence-threshold = 0.9
+# Apache-2.0 and only the compatible permissive licenses present in the locked
+# graph. Copyleft licenses are deliberately absent; a newly encountered
+# license requires an explicit policy review instead of inheriting a broad
+# compatibility list.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "Unicode-3.0",
+]
+
+[bans]
+multiple-versions = "warn"
+# Registry wildcards let an upstream release change resolution without a
+# corresponding policy change. Workspace path dependencies have no version
+# requirement by design and are the only wildcard exception.
+wildcards = "deny"
+allow-wildcard-paths = true
+highlight = "all"
+deny = [
+    { name = "openssl", reason = "Shared crates must not add a native OpenSSL dependency." },
+    { name = "openssl-sys", reason = "Shared crates must not add a native OpenSSL dependency." },
+    { name = "native-tls", reason = "Shared crates must remain independent of platform TLS." },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+# This public-release workspace accepts registry dependencies only from
+# crates.io. Git dependencies require an explicit policy review before use.
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

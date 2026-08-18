@@ -1,0 +1,43 @@
+name: supply-chain
+
+# Pull requests cannot introduce an unvetted dependency, while the scheduled
+# run catches advisories published when the repository has no open changes.
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "23 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  policy:
+    name: cargo-deny / cargo-audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.94.1 --profile minimal
+
+      # This is the same checksum-verifying installer used by proofkeel-agent,
+      # with both the action and tools pinned and fallback installation disabled.
+      - uses: taiki-e/install-action@v2.85.5
+        with:
+          tool: cargo-deny@0.20.2,cargo-audit@0.22.2
+          fallback: none
+
+      - name: Supply-chain policy contract
+        run: ./scripts/check-supply-chain-policy.sh
+
+      - name: cargo-deny (advisories / licenses / bans / sources)
+        run: cargo deny check
+
+      - name: cargo-audit (RustSec)
+        run: cargo audit

@@ -31,11 +31,13 @@ which agent is running.
    into every agent binary, adding a dependency is a supply-chain decision:
    check maintenance status and license compatibility (Apache-2.0-compatible,
    matching `proofkeel-agent`'s `cargo-deny` policy) before adding one, and
-   prefer the existing dependency set over a new crate for a single call
-   site. This is currently a manual review discipline — CI here does not yet
-   run `cargo-deny`/`cargo-audit` the way `proofkeel-agent`'s does — so
-   reviewers must apply it by hand until that gap is closed. The dependency
-   graph is deliberately small (see `Cargo.lock`); keep it that way.
+   prefer the existing dependency set over a new crate for a single call site.
+   CI runs pinned `cargo-deny` and `cargo-audit` versions on every push and pull
+   request, and a scheduled run catches advisories published between changes.
+   `deny.toml` rejects unmuted advisories, yanked crates, incompatible licenses,
+   wildcard registry dependencies, unknown registries, and all git sources
+   unless a reviewed allowlist entry is added. The dependency graph is
+   deliberately small (see `Cargo.lock`); keep it that way.
 4. **Semver discipline.** Consumers (`proofkeel-agent`, `proofkeel-sensor`)
    pin exact versions or git revisions; breaking changes are coordinated
    releases, not silent version bumps.
