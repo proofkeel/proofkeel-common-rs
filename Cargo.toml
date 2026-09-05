@@ -58,5 +58,11 @@ serde = { version = "1", features = ["derive"] }
 # Randomness (backoff jitter) ----------------------------------------------
 rand = "0.8"
 
+# Safe syscalls (path confinement) ------------------------------------------
+# Used only on unix targets for O_NOFOLLOW'd, fd-chained path resolution.
+# rustix's public API is safe; the `unsafe` needed for the underlying
+# syscalls lives inside rustix itself, not in this workspace.
+rustix = { version = "1", default-features = false, features = ["fs", "std"] }
+
 # Test-only ----------------------------------------------------------------
 tempfile = "3"

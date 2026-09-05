@@ -94,11 +94,26 @@ impl OsInfo {
     }
 }
 
+/// Cap for the single-line identity/version facts this crate probes
+/// (hostname, machine-id, kernel release, boot id, DMI attributes...).
+///
+/// These are always a short line in practice; the cap exists so a hostile or
+/// malformed file (most of what this reads is `/proc` or `/sys`, whose
+/// declared size is not trustworthy input) cannot pull an unbounded amount of
+/// data into memory just to keep the first line of it.
+const MAX_FACT_BYTES: u64 = 4 * 1024;
+
+/// Cap for the small multi-line documents this crate parses
+/// (`/etc/os-release`, `/proc/1/cgroup`). Larger than [`MAX_FACT_BYTES`]
+/// because these legitimately have more than one line, but still far above
+/// any real instance of either file.
+const MAX_DOC_BYTES: u64 = 64 * 1024;
+
 /// Read a root-relative file, trim surrounding whitespace, and collapse to a
-/// single line. `None` for absent, unreadable, or empty files.
+/// single line. `None` for absent, unreadable, empty, or oversized files.
 #[must_use]
 pub fn read_trimmed(sys: &SysRoot, rel: &str) -> Option<String> {
-    sys.read_to_string(rel)
+    sys.read_to_string_capped(rel, MAX_FACT_BYTES)
         .ok()
         .map(|s| s.lines().next().unwrap_or("").trim().to_string())
         .filter(|s| !s.is_empty())
@@ -194,7 +209,10 @@ impl OsRelease {
     /// set rather than an error — a minimal image legitimately has none.
     #[must_use]
     pub fn load(sys: &SysRoot) -> Self {
-        Self::parse(&sys.read_to_string("etc/os-release").unwrap_or_default())
+        Self::parse(
+            &sys.read_to_string_capped("etc/os-release", MAX_DOC_BYTES)
+                .unwrap_or_default(),
+        )
     }
 
     /// Parse `os-release` content that has already been read.
@@ -269,7 +287,7 @@ fn unquote(value: &str) -> String {
 #[must_use]
 pub fn detect_virt(sys: &SysRoot) -> String {
     // Xen publishes a hypervisor type here.
-    if let Ok(t) = sys.read_to_string("sys/hypervisor/type") {
+    if let Ok(t) = sys.read_to_string_capped("sys/hypervisor/type", MAX_FACT_BYTES) {
         if t.trim().eq_ignore_ascii_case("xen") {
             return "xen".to_string();
         }
@@ -282,7 +300,7 @@ pub fn detect_virt(sys: &SysRoot) -> String {
         "sys/class/dmi/id/board_vendor",
     ];
     for rel in probes {
-        if let Ok(content) = sys.read_to_string(rel) {
+        if let Ok(content) = sys.read_to_string_capped(rel, MAX_FACT_BYTES) {
             let lower = content.to_lowercase();
             let hit = if lower.contains("kvm") {
                 "kvm"
@@ -313,7 +331,7 @@ pub fn detect_virt(sys: &SysRoot) -> String {
 /// telemetry.
 #[must_use]
 pub fn detect_container(sys: &SysRoot) -> Option<&'static str> {
-    if let Ok(cgroup) = sys.read_to_string_lossy("proc/1/cgroup") {
+    if let Ok(cgroup) = sys.read_to_string_lossy_capped("proc/1/cgroup", MAX_DOC_BYTES) {
         for marker in ["/docker/", "/lxc/", "/kubepods", "containerd"] {
             if cgroup.contains(marker) {
                 return Some(marker.trim_matches('/'));

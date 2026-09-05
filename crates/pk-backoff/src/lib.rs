@@ -90,20 +90,38 @@ impl Backoff {
     }
 
     fn build(base: Duration, max: Duration, floor: JitterFloor) -> Self {
+        let max_ms = u64::try_from(max.as_millis()).unwrap_or(u64::MAX);
+        let base_ms = u64::try_from(base.as_millis()).unwrap_or(u64::MAX);
         Self {
-            base_ms: u64::try_from(base.as_millis()).unwrap_or(u64::MAX),
-            max_ms: u64::try_from(max.as_millis()).unwrap_or(u64::MAX),
+            // Guarantee `base <= max` unconditionally, rather than trusting
+            // the caller to pass them in the right order. `ceiling()` floors
+            // its capped value at `base_ms` for `JitterFloor::Base`, so a
+            // caller-supplied `base > max` would otherwise let the ceiling
+            // sit above `max` forever — silently defeating the entire point
+            // of `max` being a cap.
+            base_ms: base_ms.min(max_ms),
+            max_ms,
             factor: 2.0,
             floor,
             attempt: 0,
         }
     }
 
-    /// Override the growth factor (default 2.0). Values below 1.0 are clamped
-    /// to 1.0, which would otherwise shrink the ceiling on every attempt.
+    /// Override the growth factor (default 2.0). Values below 1.0 (including
+    /// NaN, which `f64::max` treats as less than any number) are clamped to
+    /// 1.0, which would otherwise shrink the ceiling on every attempt.
     #[must_use]
     pub fn with_factor(mut self, factor: f64) -> Self {
         self.factor = factor.max(1.0);
+        self
+    }
+
+    /// Seed the attempt counter, e.g. to resume a schedule persisted across a
+    /// restart. `next_delay` afterwards behaves exactly as if this many
+    /// failures had already been recorded.
+    #[must_use]
+    pub const fn with_attempt(mut self, attempt: u32) -> Self {
+        self.attempt = attempt;
         self
     }
 
@@ -117,6 +135,26 @@ impl Backoff {
     #[must_use]
     pub const fn attempt(&self) -> u32 {
         self.attempt
+    }
+
+    /// The configured starting delay (`base`/`min` at construction; may be
+    /// smaller than what was passed in if it exceeded `max`).
+    #[must_use]
+    pub const fn base(&self) -> Duration {
+        Duration::from_millis(self.base_ms)
+    }
+
+    /// The configured ceiling (`max` at construction). [`Backoff::ceiling`]
+    /// never exceeds this.
+    #[must_use]
+    pub const fn max(&self) -> Duration {
+        Duration::from_millis(self.max_ms)
+    }
+
+    /// The configured growth factor (default 2.0; see [`Backoff::with_factor`]).
+    #[must_use]
+    pub const fn factor(&self) -> f64 {
+        self.factor
     }
 
     /// Forget the failure history after a success.
@@ -362,12 +400,31 @@ mod tests {
 
     #[test]
     fn the_attempt_counter_cannot_overflow() {
-        let mut b = Backoff {
-            attempt: u32::MAX,
-            ..Backoff::default()
-        };
+        let mut b = Backoff::default().with_attempt(u32::MAX);
         b.next_delay();
         assert_eq!(b.attempt(), u32::MAX);
+    }
+
+    #[test]
+    fn with_attempt_seeds_the_sequence_publicly() {
+        // A consumer resuming a persisted backoff across a restart needs a
+        // public way to do this; it must not require reaching into private
+        // fields (which only this crate's own tests can do).
+        let mut resumed = Backoff::floored_jitter(Duration::from_secs(1), Duration::from_secs(64))
+            .with_attempt(3);
+        assert_eq!(resumed.attempt(), 3);
+        assert_eq!(resumed.ceiling(), Duration::from_secs(8));
+        resumed.reset();
+        assert_eq!(resumed.attempt(), 0);
+    }
+
+    #[test]
+    fn accessors_report_the_configuration_that_was_set() {
+        let b = Backoff::full_jitter(Duration::from_millis(50), Duration::from_secs(30))
+            .with_factor(3.0);
+        assert_eq!(b.base(), Duration::from_millis(50));
+        assert_eq!(b.max(), Duration::from_secs(30));
+        assert_eq!(b.factor(), 3.0);
     }
 
     // ---- properties of the merge itself ---------------------------------
@@ -394,6 +451,24 @@ mod tests {
             assert!(b.next_delay_rng(&mut rng) >= Duration::from_secs(1));
         }
         assert!(saw_below_base, "full jitter never dipped below base");
+    }
+
+    #[test]
+    fn a_base_larger_than_max_never_defeats_the_cap() {
+        // A misconfigured `base > max` must not let the JitterFloor::Base
+        // floor-clamp in `ceiling()` push the result above `max` forever —
+        // that would silently defeat the entire point of `max` being a cap.
+        let mut b = Backoff::floored_jitter(Duration::from_secs(100), Duration::from_secs(10));
+        assert_eq!(
+            b.base(),
+            Duration::from_secs(10),
+            "base should clamp to max"
+        );
+        assert!(b.ceiling() <= Duration::from_secs(10));
+        let mut rng = StdRng::seed_from_u64(3);
+        for _ in 0..20 {
+            assert!(b.next_delay_rng(&mut rng) <= Duration::from_secs(10));
+        }
     }
 
     #[test]

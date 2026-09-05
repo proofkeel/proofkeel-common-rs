@@ -90,6 +90,7 @@ dependencies = [
 name = "pk-sysroot"
 version = "0.1.0"
 dependencies = [
+ "rustix",
  "tempfile",
  "thiserror",
 ]
