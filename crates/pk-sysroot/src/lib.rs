@@ -87,7 +87,15 @@
 use std::path::{Path, PathBuf};
 
 /// Errors from confined reads.
+///
+/// `#[non_exhaustive]`: this crate is the chassis for two privileged binaries
+/// in separate repositories that pin it by git revision, so a consumer's
+/// exhaustive `match` turns any new variant into a compile break they discover
+/// only when they bump the pin — long after the change was made, and with no
+/// signal at the time it was made. Adding `Symlink` and `TooLarge` did exactly
+/// that. Consumers must carry a wildcard arm; new variants are then additive.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum SysError {
     /// The path escaped the root.
     #[error("path {path:?} escapes the collection root")]
@@ -121,6 +129,24 @@ pub enum SysError {
         #[source]
         source: std::io::Error,
     },
+}
+
+impl SysError {
+    /// The root-relative path this error is about.
+    ///
+    /// Every variant carries one, so this is total. It exists because the enum
+    /// is `#[non_exhaustive]`: a consumer that only needs the path should not
+    /// have to match variants it cannot exhaustively name, and should not break
+    /// when a new refusal kind is added.
+    #[must_use]
+    pub fn path(&self) -> &str {
+        match self {
+            Self::Escapes { path }
+            | Self::Symlink { path }
+            | Self::TooLarge { path, .. }
+            | Self::Io { path, .. } => path,
+        }
+    }
 }
 
 /// Convenience result alias for confined reads.
