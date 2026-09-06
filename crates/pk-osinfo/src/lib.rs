@@ -194,6 +194,10 @@ pub fn normalize_arch(arch: &str) -> String {
     match arch {
         "x86_64" => "x86_64",
         "aarch64" => "aarch64",
+        // The only supported 32-bit ARM release target is armv7-musleabihf;
+        // Rust reports its architecture as `arm`. Preserve unsupported ARM
+        // variants explicitly instead of selecting an incompatible artifact.
+        "arm" | "armv7" | "armv7l" => "armv7",
         other => other,
     }
     .to_string()
@@ -376,6 +380,15 @@ pub fn live_root() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn release_architecture_names_match_supported_artifacts() {
+        for alias in ["arm", "armv7", "armv7l"] {
+            assert_eq!(normalize_arch(alias), "armv7");
+        }
+        assert_eq!(normalize_arch("armv6l"), "armv6l");
+        assert_eq!(normalize_arch("riscv64"), "riscv64");
+    }
     use std::fs;
 
     fn write(root: &Path, rel: &str, content: &str) {
