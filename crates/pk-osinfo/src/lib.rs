@@ -163,7 +163,14 @@ pub fn boot_id(sys: &SysRoot) -> Option<String> {
 /// signal — see [`detect_container`].
 #[must_use]
 pub fn dmi(sys: &SysRoot, attribute: &str) -> Option<String> {
+    // Linux exposes class/dmi/id as a symlink to this canonical device
+    // directory. Read the fixed physical location through the same confined
+    // accessor; never follow arbitrary links supplied by the observed root.
+    if attribute.is_empty() || attribute.contains('/') || attribute == "." || attribute == ".." {
+        return None;
+    }
     read_trimmed(sys, &format!("sys/class/dmi/id/{attribute}"))
+        .or_else(|| read_trimmed(sys, &format!("sys/devices/virtual/dmi/id/{attribute}")))
 }
 
 /// Map a distro `ID` (or `ID_LIKE` token) onto its family, if recognised.
@@ -211,6 +218,10 @@ impl OsRelease {
     pub fn load(sys: &SysRoot) -> Self {
         Self::parse(
             &sys.read_to_string_capped("etc/os-release", MAX_DOC_BYTES)
+                // Standard Linux installations symlink /etc/os-release to
+                // /usr/lib/os-release. Keep strict no-follow confinement and
+                // use the specified vendor fallback directly.
+                .or_else(|_| sys.read_to_string_capped("usr/lib/os-release", MAX_DOC_BYTES))
                 .unwrap_or_default(),
         )
     }
@@ -293,14 +304,9 @@ pub fn detect_virt(sys: &SysRoot) -> String {
         }
     }
     // KVM/QEMU/VMware/Hyper-V are identifiable from DMI vendor/product strings.
-    let probes = [
-        "sys/class/dmi/id/sys_vendor",
-        "sys/class/dmi/id/product_name",
-        "sys/class/dmi/id/bios_vendor",
-        "sys/class/dmi/id/board_vendor",
-    ];
+    let probes = ["sys_vendor", "product_name", "bios_vendor", "board_vendor"];
     for rel in probes {
-        if let Ok(content) = sys.read_to_string_capped(rel, MAX_FACT_BYTES) {
+        if let Some(content) = dmi(sys, rel) {
             let lower = content.to_lowercase();
             let hit = if lower.contains("kvm") {
                 "kvm"
@@ -376,6 +382,64 @@ mod tests {
         let p = root.join(rel);
         fs::create_dir_all(p.parent().unwrap()).unwrap();
         fs::write(p, content).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn normal_linux_symlink_layout_preserves_platform_facts() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "usr/lib/os-release",
+            "ID=ubuntu\nVERSION_ID=24.04\n",
+        );
+        std::fs::create_dir_all(dir.path().join("etc")).unwrap();
+        std::os::unix::fs::symlink("../usr/lib/os-release", dir.path().join("etc/os-release"))
+            .unwrap();
+        write(
+            dir.path(),
+            "sys/devices/virtual/dmi/id/product_name",
+            "KVM\n",
+        );
+        std::fs::create_dir_all(dir.path().join("sys/class/dmi")).unwrap();
+        std::os::unix::fs::symlink(
+            "../../devices/virtual/dmi/id",
+            dir.path().join("sys/class/dmi/id"),
+        )
+        .unwrap();
+        let root = SysRoot::new(dir.path());
+        assert_eq!(OsRelease::load(&root).family(), "debian");
+        assert_eq!(detect_virt(&root), "kvm");
+        assert_eq!(dmi(&root, "product_name").as_deref(), Some("KVM"));
+    }
+
+    #[test]
+    fn dmi_attribute_cannot_escape_the_fixed_device_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "sys/devices/virtual/private", "not-a-dmi-fact");
+        let root = SysRoot::new(dir.path());
+        for attribute in ["", ".", "..", "../../private", "product_name/../private"] {
+            assert_eq!(dmi(&root, attribute), None);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn vendor_fallback_does_not_follow_an_outside_os_release_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        write(outside.path(), "os-release", "ID=untrusted\n");
+        write(dir.path(), "usr/lib/os-release", "ID=debian\n");
+        std::fs::create_dir_all(dir.path().join("etc")).unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("os-release"),
+            dir.path().join("etc/os-release"),
+        )
+        .unwrap();
+        assert_eq!(
+            OsRelease::load(&SysRoot::new(dir.path())).family(),
+            "debian"
+        );
     }
 
     #[test]
